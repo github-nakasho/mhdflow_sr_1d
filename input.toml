@@ -1,0 +1,22 @@
+[grid]
+ix = 256
+
+[scheme]
+flux = 'HLLD'
+tvdrk = 3
+rec = 'mp5'
+
+[region]
+x1 = 1.0
+x0 = 0.0
+
+[time]
+cfl = 0.8
+dtmin = 1.0e-20
+nstop = 1000000
+tint = 0.01
+tstop = 0.2
+
+[boundary]
+xl = 'free'
+xr = 'free'
