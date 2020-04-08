@@ -33,7 +33,7 @@ if __name__ == '__main__':
                                         input_params['region']['x0'])
     # make instance of flux
     if input_params['scheme']['flux'] == 'HLL':
-        flux = HLL()
+        flux = HLL(input_params['grid']['ix']+2*(order-1))
     elif input_params['scheme']['flux'] == 'HLLD':
         flux = HLLD()
     else:
@@ -57,7 +57,7 @@ if __name__ == '__main__':
     # make incetence of initial conditions
     ini = InitialCondition(cartesian['x'], input_params['grid']['ix'], order)
     # set initial condition
-    U, V = ini.RJ2a()
+    U, V = ini.B()
     # set time step variables
     nstep = 0
     nout = 0

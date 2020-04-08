@@ -3,6 +3,6 @@
 import numpy as np
 
 class Const:
-    GAMMA = 5 / 3
+    GAMMA = 6 / 3
     EPS = np.finfo(float).eps
     

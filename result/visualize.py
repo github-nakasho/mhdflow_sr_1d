@@ -17,7 +17,7 @@ def plot1d(data, images):
 if __name__ == '__main__':
     images = []
     fig = plt.figure()
-    for i in range(21):
+    for i in range(41):
         filename = str(i) + '.txt'
         data = LoadTxt(filename)
         im = plot1d(data, images)

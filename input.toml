@@ -2,7 +2,7 @@
 ix = 256
 
 [scheme]
-flux = 'HLLD'
+flux = 'HLL'
 tvdrk = 3
 rec = 'mp5'
 
@@ -15,7 +15,7 @@ cfl = 0.8
 dtmin = 1.0e-20
 nstop = 1000000
 tint = 0.01
-tstop = 0.2
+tstop = 0.4
 
 [boundary]
 xl = 'free'
