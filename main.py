@@ -35,7 +35,7 @@ if __name__ == '__main__':
     if input_params['scheme']['flux'] == 'HLL':
         flux = HLL(input_params['grid']['ix']+2*(order-1))
     elif input_params['scheme']['flux'] == 'HLLD':
-        flux = HLLD()
+        flux = HLLD(input_params['grid']['ix']+2*(order-1))
     else:
         sys.exit()
     # make instance of reconstruct

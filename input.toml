@@ -2,7 +2,7 @@
 ix = 256
 
 [scheme]
-flux = 'HLL'
+flux = 'HLLD'
 tvdrk = 3
 rec = 'mp5'
 

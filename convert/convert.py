@@ -10,16 +10,16 @@ class Convert:
     def __init__(self, ixmax):
         self.rec = Recovery(ixmax)
 
-    def PtoF(self, ro, vx, vy, vz, bx, by, bz, pt, en):
-        F = np.zeros((8, len(ro)))
-        F[0] = ro * vx
-        F[1] = ro * vx * vx + pt - bx * bx
-        F[2] = ro * vy * vx - by * bx
-        F[3] = ro * vz * vx - bz * bx
-        F[4] = (en+pt) * vx - (vy*by+vz*bz) * bx
+    def toF(self, d, vn, vt, vu, bn, bt, bu, w, u, b, pt, mn):
+        F = np.zeros((8, len(d)))
+        F[0] = d * vn
+        F[1] = w * u[1] * u[1] - b[1] * b[1] + pt
+        F[2] = w * u[1] * u[2] - b[1] * b[2]
+        F[3] = w * u[1] * u[3] - b[1] * b[3]
+        F[4] = mn
         F[5] = 0
-        F[6] = by * vx - vy * bx
-        F[7] = bz * vx - vz * bx
+        F[6] = bt * vn - vt * bn
+        F[7] = bu * vn - vu * bn
         return F
 
     def UtoV(self, U):

@@ -35,7 +35,7 @@ class TVDRK3:
         U1 = self.xlbc.set_u(U1)
         U1 = self.xrbc.set_u(U1)
         V = self.conv.UtoV(U1)
-        # U1, V = Check(V)
+        U1, V = Check(V)
         return U1, V
 
     def second_step(self, U, U1, V, dt):
@@ -51,7 +51,7 @@ class TVDRK3:
         U1 = self.xlbc.set_u(U1)
         U1 = self.xrbc.set_u(U1)
         V = self.conv.UtoV(U1)
-        # U1, V = Check(V)
+        U1, V = Check(V)
         return U1, V
 
     def third_step(self, U, U1, V, dt):
@@ -67,7 +67,7 @@ class TVDRK3:
         U = self.xlbc.set_u(U)
         U = self.xrbc.set_u(U)
         V = self.conv.UtoV(U)
-        # U, V = Check(V)
+        U, V = Check(V)
         return U, V
 
     def time_step(self, U, V, dt):

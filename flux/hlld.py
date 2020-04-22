@@ -6,170 +6,398 @@ from common import Const
 from convert import Convert
 
 class HLLD:
-    def __init__(self):
-        self.conv = Convert()
+    def __init__(self, ixmax):
+        self.gm = Const.GAMMA
+        self.gmr = self.gm / (self.gm-1)
+        self.eps = Const.EPS
+        self.conv = Convert(ixmax)
+        self.max_iter = 20
+        self.speed_limit = 1.0e-6
+
+    def compute_left_right_state(self, Vlr):
+        # set primitive variables @ right-face -----
+        vn = Vlr[1]
+        vt = Vlr[2]
+        vu = Vlr[3]
+        pg = Vlr[4]
+        bnc = Vlr[5]
+        bt = Vlr[6]
+        bu = Vlr[7]
+        # ----- set primitive variables @ right-face
+        # compute v^2, B^2, v dot b, Lorents factor
+        v2 = vn ** 2 + vt ** 2 + vu ** 2
+        b2 = bnc ** 2 + bt ** 2 + bu ** 2 
+        vb = vn * bnc + vt * bt + vu * bu
+        # compute total pressure
+        pt = pg + 0.5 * (b2*(1-v2)+vb**2)
+        # compute Ul, Ur
+        Ulr = self.conv.VtoU(Vlr)
+        # compute Fl, Fr
+        Flr = self.conv.UVtoF(Ulr, Vlr, b2, vb, v2)
+        return Ulr, Flr, pt, bnc
+        
+    def compute_fs_mode(self, Vlr):
+        # compute fast/slow mode signal speeds from Leismann 2005-----
+        v2 = Vlr[1] * Vlr[1] + Vlr[2] * Vlr[2] + Vlr[3] * Vlr[3]
+        b2 = Vlr[5] * Vlr[5] + Vlr[6] * Vlr[6] + Vlr[7] * Vlr[7]
+        vb = Vlr[1] * Vlr[5] + Vlr[2] * Vlr[6] + Vlr[3] * Vlr[7]
+        p = Vlr[4]
+        ro = Vlr[0]
+        vx = Vlr[1]
+        h = 1 + self.gmr * p / ro
+        bb2 = b2 * v2 + vb * vb
+        hast = h + bb2 / ro
+        cs2 = self.gm * p / (ro*h)
+        ca2 = bb2 / (ro*hast)
+        r = cs2 * vb * vb / (ro*hast) * (1-v2)
+        om2 = cs2 + ca2 - cs2 * ca2
+        den = 1 - v2 * om2 - r
+        num1 = r - om2 * (1-v2)
+        num2 = (1-om2) * vx * vx - den
+        # compute lambda_fms eq. (27)
+        vfp = vx * (1-om2) / den + np.sqrt(num1*num2) / den
+        vfm = vx * (1-om2) / den - np.sqrt(num1*num2) / den
+        # ----- compute fast/slow mode signal speeds from Leismann 2005
+        return vfp, vfm
+
+    def compute_middle_state(self, slr, Ulr, Flr, ptc, bnc): 
+        # compute R components eq. (17) - (20)
+        r = slr * Ulr - Flr
+        # compute coefficients eq. (26) - (30)
+        a = r[1] - slr * r[4] + ptc * (1-slr**2)
+        g = r[6] ** 2 + r[7] ** 2
+        c = r[2] * r[6] + r[3] * r[7]
+        q = - a - g + bnc ** 2 * (1-slr**2)
+        x = bnc * (a*slr*bnc+c) - (a+g) * (slr*ptc+r[4])
+        # compute velocities eq. (23) - (25)
+        vn = (bnc*(a*bnc+slr*c)-(a+g)*(ptc+r[1])) / x
+        vt = (q*r[2]+r[6]*(c+bnc*(slr*r[1]-r[4]))) / x
+        vu = (q*r[3]+r[7]*(c+bnc*(slr*r[1]-r[4]))) / x
+        # compute B-fields eq. (21)
+        bt = (r[6]-bnc*vt) / (slr-vn)
+        bu = (r[7]-bnc*vu) / (slr-vn)
+        # compute w eq. (31)
+        w = ptc + (r[4]-(vn*r[1]+vt*r[2]+vu*r[3])) / (slr-vn)
+        # if np.any(w<0):
+        #     print("w is negarive")
+        #     print((r[4]-(vn*r[1]+vt*r[2]+vu*r[3])) / (slr-vn))
+        #     print(vn*r[1]+vt*r[2]+vu*r[3])
+        #     print(slr-vn)
+        #     import sys
+        #     sys.exit()
+        # compute v dot B
+        vb = vn * bnc + vt * bt + vu * bu
+        # compute conserved variables eq. (32) - (34)
+        d = r[0] / (slr-vn)
+        e = (r[4]+ptc*vn-vb*bnc) / (slr-vn)
+        mn = (e+ptc) * vn - vb * bnc
+        mt = (e+ptc) * vt - vb * bt
+        mu = (e+ptc) * vu - vb * bu
+        # compute Um 
+        Um = np.zeros(Ulr.shape)
+        Um[0] = d
+        Um[1] = mn
+        Um[2] = mt
+        Um[3] = mu
+        Um[4] = e
+        Um[5] = bnc
+        Um[6] = bt
+        Um[7] = bu
+        return vn, vt, vu, bt, bu, w, d, e, mn, mt, mu, Um, r
+    
+    def compute_central_state(self, dm, vnm, vtm, vum, mnm, ptc, em, bnc, btm, bum, btc, buc, knc, ktc, kuc, etac):
+        # compute v eq. (47)
+        kc2 = knc ** 2 + ktc ** 2 + kuc ** 2
+        kbc = knc * bnc + ktc * btc + kuc * buc
+        tmp = (1-kc2) / (etac-kbc)
+        vnc = knc - bnc * tmp
+        vtc = ktc - btc * tmp
+        vuc = kuc - buc * tmp
+        # compute D eq. (50)
+        dc = dm * (knc-vnm) / (knc-vnc)
+        # compute E eq. (51)
+        vbc = vnc * bnc + vtc * btc + vuc * buc
+        ec = (knc*em-mnm+ptc*vnc-vbc*bnc) / (knc-vnc)
+        # compute m vector eq. (52)
+        mnc = (ec+ptc) * vnc - vbc * bnc
+        mtc = (ec+ptc) * vtc - vbc * btc
+        muc = (ec+ptc) * vuc - vbc * buc
+        # compute Uc
+        Uc = np.zeros((8, len(dm)))
+        Uc[0] = dc
+        Uc[1] = mnc
+        Uc[2] = mtc
+        Uc[3] = muc
+        Uc[4] = ec
+        Uc[5] = bnc
+        Uc[6] = btc
+        Uc[7] = buc
+        return vnc, vtc, vuc, dc, ec, mnc, mtc, muc, Uc
+    
+    def find_pressure(self, sl, sr, Ul, Ur, Fl, Fr, ptl, ptr, ptc, bnc):
+        # compute middle right (mr) state -----
+        vnmr, vtmr, vumr, \
+        btmr, bumr, \
+        wmr, dmr, emr, \
+        mnmr, mtmr, mumr, \
+        Umr, Rr = self.compute_middle_state(sr, Ur, Fr, ptc, bnc)
+        # compute sigma vector eq. (35), (42)
+        etacr = np.sign(bnc) * np.sqrt(wmr)
+        # ----- compute middle right (mr) state
+        # compute middle left (ml) state -----
+        vnml, vtml, vuml, \
+        btml, buml, \
+        wml, dml, eml, \
+        mnml, mtml, muml, \
+        Uml, Rl = self.compute_middle_state(sl, Ul, Fl, ptc, bnc)
+        # compute sigma vector eq. (35), (41)
+        etacl = - np.sign(bnc) * np.sqrt(wml)
+        # ----- compute middle left (ml) state
+        # compute Kcr vector eq. (41)
+        kncr = (Rr[1]+ptc+Rr[5]*etacr) / (sr*ptc+Rr[4]+bnc*etacr)
+        ktcr = (Rr[2]+Rr[6]*etacr) / (sr*ptc+Rr[4]+bnc*etacr)
+        kucr = (Rr[3]+Rr[7]*etacr) / (sr*ptc+Rr[4]+bnc*etacr)
+        # Kx = sa (speed of Alfven wave)
+        sar = kncr
+        # compute Kcl vector eq. (41)
+        kncl = (Rl[1]+ptc+Rl[5]*etacl) / (sl*ptc+Rl[4]+bnc*etacl)
+        ktcl = (Rl[2]+Rl[6]*etacl) / (sl*ptc+Rl[4]+bnc*etacl)
+        kucl = (Rl[3]+Rl[7]*etacl) / (sl*ptc+Rl[4]+bnc*etacl)
+        # Kx = sa (speed of Alfven wave)
+        sal = kncl
+        # compute B-fields @ central region eq. (45)
+        dk = kncr - kncl + self.eps
+        btc = ((btmr*(kncr-vnmr)+bnc*vtmr)-(btml*(kncl-vnml)+bnc*vtml)) / dk
+        buc = ((bumr*(kncr-vnmr)+bnc*vumr)-(buml*(kncl-vnml)+bnc*vuml)) / dk
+        # compute center right (cr) state
+        vncr, vtcr, vucr, \
+        dcr, ecr, \
+        mncr, mtcr, mucr, \
+        Ucr = self.compute_central_state(dmr, 
+                                                vnmr, vtmr, vumr, 
+                                                mnmr, ptc, emr, 
+                                                bnc, btmr, bumr, btc, buc, 
+                                                kncr, ktcr, kucr, 
+                                                etacr)
+        # compute center left (cl) state
+        vncl, vtcl, vucl, \
+        dcl, ecl, \
+        mncl, mtcl, mucl, \
+        Ucl = self.compute_central_state(dml, 
+                                                vnml, vtml, vuml, 
+                                                mnml, ptc, eml, 
+                                                bnc, btml, buml, btc, buc, 
+                                                kncl, ktcl, kucl, 
+                                                etacl)
+        # get entropy wave speed (= average of left-side speed and right-side speed) 
+        sm = 0.5 * (vncl+vncr)
+        # judge unphysical solution or NOT
+        failed = self.judgement_hlld(sl, sr, sal, sar, vnml, vnmr, vncl, vncr, wml, wmr, ptc)
+        return vncl - vncr, sal, sar, btc, buc, sm, failed
+
+    def initial_guess(self, ptl, ptr, bnc, sl, sr, Ul, Ur, Fl, Fr):
+        ptc0 = np.zeros(ptl.shape)
+        ptmax = np.maximum(ptl, ptr)
+        # set true & false array
+        ta = bnc ** 2 / ptmax < 0.01
+        fa = ta == False | np.isnan(bnc**2/ptmax)
+        # initial guess for Bx -> 0 limit
+        a = sr - sl
+        rr = sr * Ur - Fr
+        rl = sl * Ul - Fl
+        b = rr[4] - rl[4] + sr * rl[1] - sl * rr[1]
+        c = rl[1] * rr[4] - rr[1] * rl[4]
+        tmp = b * b - 4 * a * c
+        tmp = np.maximum(tmp, 0)
+        ptc0[ta] = 0.5 * (-b[ta]+np.sqrt(tmp[ta])) / a[ta]
+        # compute conservative variables of HLL state
+        Uhll = (sr*Ur-sl*Ul+Fl-Fr) / (sr-sl)
+        # get primitive variables of HLL state
+        Vhll = self.conv.UtoV(Uhll)
+        # compute total pressure
+        b2 = Vhll[5] * Vhll[5] + Vhll[6] * Vhll[6] + Vhll[7] * Vhll[7]
+        v2 = Vhll[1] * Vhll[1] + Vhll[2] * Vhll[2] + Vhll[3] * Vhll[3]
+        vb = Vhll[1] * Vhll[5] + Vhll[2] * Vhll[6] + Vhll[3] * Vhll[7]
+        ptc0[fa] = Vhll[4][fa] + 0.5 * (b2[fa]*(1-v2[fa])+vb[fa]**2)
+        return ptc0
+    
+    def judgement_hlld(self, sl, sr, sal, sar, vml, vmr, vcl, vcr, wl, wr, p):
+        success = vcl - sal > - self.speed_limit
+        success &= sal - vcr > - self.speed_limit
+        success &= sl - vml < 0
+        success &= sr - vmr > 0
+        success &= sal - sl > -self.speed_limit
+        success &= sr - sar > -self.speed_limit
+        success &= wr - p > 0
+        success &= wl - p > 0
+        failed = success == False
+        return failed
 
     def make_flux(self, Vl, Vr, ix, order):
+        F = np.zeros(Vl.shape)
         eps = Const.EPS
-        gm = Const.GAMMA
-        # set primitive variables @ left-face
-        rol = Vl[0]
-        vnl = Vl[1]
-        vtl = Vl[2]
-        vul = Vl[3]
-        prl = Vl[4]
-        bnc = Vl[5]
-        btl = Vl[6]
-        bul = Vl[7]
-        # set primitive variables @ right-face
-        ror = Vr[0]
-        vnr = Vr[1]
-        vtr = Vr[2]
-        vur = Vr[3]
-        prr = Vr[4]
-        bnc = Vr[5]
-        btr = Vr[6]
-        bur = Vr[7]
-        # bn @ the interface
-        bnc2 = bnc * bnc
-        sgn = np.sign(bnc)
-        # variables @ the left-face
-        roli = 1 / rol
-        pml = 0.5 * (btl**2+bul**2)
-        ptl = prl + pml
-        enl = gm * prl + pml + 0.5 * rol * (vnl**2+vtl**2+vul**2)
-        vbl = vtl * btl + vul * bul
-        # variables @ the right-face
-        rori = 1 / ror
-        pmr = 0.5 * (btr**2+bur**2)
-        ptr = prr + pmr
-        enr = gm * prr + pmr + 0.5 * ror * (vnr**2+vtr**2+vur**2)
-        vbr = vtr * btr + vur * bur
-        # maximum / minimum wave speeds
-        cl2 = gm * prl * roli
-        cr2 = gm * prr * rori
-        cal2 = bnc2 * roli
-        car2 = bnc2 * rori
-        cbl2 = cl2 + cal2 + 2 * pml * roli
-        cbr2 = cr2 + car2 + 2 * pmr * rori
-        cfl2 = 0.5 * (cbl2+np.sqrt(abs(cbl2*cbl2-4*cl2*cal2)))
-        cfr2 = 0.5 * (cbr2+np.sqrt(abs(cbr2*cbr2-4*cr2*car2)))
-        cfl = np.sqrt(cfl2)
-        cfr = np.sqrt(cfr2)
-        sl = np.minimum(0.0, np.minimum(vnl, vnr)-np.maximum(cfl, cfr))
-        sr = np.maximum(0.0, np.maximum(vnl, vnr)+np.maximum(cfl, cfr))
-        # HLL average of the normal velocity and the total pressure
-        slvl = sl - vnl
-        srvr = sr - vnr
-        rslvl = rol * slvl
-        rsrvr = ror * srvr
-        drsvi = 1 / (rsrvr-rslvl)
-        vnc = (rsrvr*vnr-rslvl*vnl-ptr+ptl) * drsvi
-        ptc = (rsrvr*ptl-rslvl*ptr+rsrvr*rslvl*(vnr-vnl)) * drsvi
-        # variables of the outer sides in the Riemann fan
-        slvc = sl - vnc
-        srvc = sr - vnc
-        ro2l = rslvl / slvc
-        ro2r = rsrvr / srvc
-        rhdl = rslvl * slvc - bnc2
-        rhdr = rsrvr * srvc - bnc2
-        # set ta (= true array) & fa (= false array)
-        ta = abs(rhdl) > eps
-        rhdli = np.zeros(np.shape(rhdl))
-        rhnvl = np.zeros(np.shape(rhdl))
-        rhnbl = np.zeros(np.shape(rhdl))
-        vt2l = np.zeros(np.shape(rhdl))
-        vu2l = np.zeros(np.shape(rhdl))
-        bt2l = np.zeros(np.shape(rhdl))
-        bu2l = np.zeros(np.shape(rhdl))
-        # if abs(rhdl) > eps
-        rhdli[ta] = 1 / rhdl[ta]
-        rhnvl[ta] = (vnl[ta]-vnc[ta]) * bnc[ta]
-        rhnbl[ta] = rslvl[ta] * slvl[ta] - bnc2[ta]
-        vt2l[ta] = vtl[ta] + rhnvl[ta] * rhdli[ta] * btl[ta]
-        vu2l[ta] = vul[ta] + rhnvl[ta] * rhdli[ta] * bul[ta]
-        bt2l[ta] = rhnbl[ta] * rhdli[ta] * btl[ta]
-        bu2l[ta] = rhnbl[ta] * rhdli[ta] * bul[ta]
-        # else 
-        fa = ta == False
-        vt2l[fa] = vtl[fa]
-        vu2l[fa] = vul[fa]
-        bt2l[fa] = btl[fa]
-        bu2l[fa] = bul[fa]
-        # set ta (= true array) & fa (= false array)
-        ta = abs(rhdr) > eps
-        rhdri = np.zeros(np.shape(rhdr))
-        rhnvr = np.zeros(np.shape(rhdr))
-        rhnbr = np.zeros(np.shape(rhdr))
-        vt2r = np.zeros(np.shape(rhdr))
-        vu2r = np.zeros(np.shape(rhdr))
-        bt2r = np.zeros(np.shape(rhdr))
-        bu2r = np.zeros(np.shape(rhdr))
-        # if abs(rhdr) > eps
-        rhdri[ta] = 1 / rhdr[ta]
-        rhnvr[ta] = (vnr[ta]-vnc[ta]) * bnc[ta]
-        rhnbr[ta] = rsrvr[ta] * srvr[ta] - bnc2[ta]
-        vt2r[ta] = vtr[ta] + rhnvr[ta] * rhdri[ta] * btr[ta]
-        vu2r[ta] = vur[ta] + rhnvr[ta] * rhdri[ta] * bur[ta]
-        bt2r[ta] = rhnbr[ta] * rhdri[ta] * btr[ta]
-        bu2r[ta] = rhnbr[ta] * rhdri[ta] * bur[ta]
-        # else
-        fa = ta & False
-        vt2r[fa] = vtr[fa]
-        vu2r[fa] = vur[fa]
-        bt2r[fa] = btr[fa]
-        bu2r[fa] = bur[fa]
-        vb2l = vt2l * bt2l + vu2l * bu2l
-        vb2r = vt2r * bt2r + vu2r * bu2r
-        en2l = (slvl*enl-ptl*vnl+ptc*vnc+bnc*(vbl-vb2l)) / slvc
-        en2r = (srvr*enr-ptr*vnr+ptc*vnc+bnc*(vbr-vb2r)) / srvc
-        # variables of the inner sides in Riemann fan
-        rro2l = np.sqrt(ro2l)
-        rro2r = np.sqrt(ro2r)
-        rro2i = 1 / (rro2r+rro2l)
-        vt3m = (rro2r*vt2r+rro2l*vt2l+(bt2r-bt2l)*sgn) * rro2i
-        vu3m = (rro2r*vu2r+rro2l*vu2l+(bu2r-bu2l)*sgn) * rro2i
-        bt3m = (rro2l*bt2r+rro2r*bt2l+rro2r*rro2l*(vt2r-vt2l)*sgn) * rro2i
-        bu3m = (rro2l*bu2r+rro2r*bu2l+rro2r*rro2l*(vu2r-vu2l)*sgn) * rro2i
-        vb3m = vt3m * bt3m + vu3m * bu3m
-        en3l = en2l - rro2l * (vb2l-vb3m) * sgn
-        en3r = en2r + rro2r * (vb2r-vb3m) * sgn
-        # variables @ the interface
-        ta1 = vnc - abs(bnc) / rro2l > 0
-        rou = np.zeros(np.shape(ro2l))
-        vtu = np.zeros(np.shape(ro2l))
-        vuu = np.zeros(np.shape(ro2l))
-        btu = np.zeros(np.shape(ro2l))
-        buu = np.zeros(np.shape(ro2l))
-        enu = np.zeros(np.shape(ro2l))
-        rou[ta1] = ro2l[ta1]
-        vtu[ta1] = vt2l[ta1]
-        vuu[ta1] = vu2l[ta1]
-        btu[ta1] = bt2l[ta1]
-        buu[ta1] = bu2l[ta1]
-        enu[ta1] = en2l[ta1]
-        ta2 =  (vnc - abs(bnc) / rro2l <= 0) & (vnc >= 0)
-        rou[ta2] = ro2l[ta2]
-        vtu[ta2] = vt3m[ta2]
-        vuu[ta2] = vu3m[ta2]
-        btu[ta2] = bt3m[ta2]
-        buu[ta2] = bu3m[ta2]
-        enu[ta2] = en3l[ta2]
-        ta3 = (vnc < 0.0) & (vnc + abs(bnc) / rro2r >= 0)
-        rou[ta3] = ro2r[ta3]
-        vtu[ta3] = vt3m[ta3]
-        vuu[ta3] = vu3m[ta3]
-        btu[ta3] = bt3m[ta3]
-        buu[ta3] = bu3m[ta3]
-        enu[ta3] = en3r[ta3]
-        ta4 = ta1 | ta2 | ta3
-        fa = ta4 & False
-        rou[fa] = ro2r[fa]
-        vtu[fa] = vt2r[fa]
-        vuu[fa] = vu2r[fa]
-        btu[fa] = bt2r[fa]
-        buu[fa] = bu2r[fa]
-        enu[fa] = en2r[fa]
-        # HLLD fluxes
-        F = self.conv.PtoF(rou, vnc, vtu, vuu, bnc, btu, buu, ptc, enu)
+        # get right state
+        Ur, Fr, ptr, bnc = self.compute_left_right_state(Vr)
+        # get left state
+        Ul, Fl, ptl, bnc = self.compute_left_right_state(Vl)
+        # compute left & right fast mode wave speeds
+        vfpr, vfmr = self.compute_fs_mode(Vr)
+        vfpl, vfml = self.compute_fs_mode(Vl)
+        # compute propagation speeds of Riemann fan
+        sl = np.minimum(0, vfml, vfmr)
+        sr = np.maximum(0, vfpl, vfpr)
+        # set true arrays
+        tl = sl >= 0
+        tr = sr <= 0
+        tm = tl | tr
+        tm = tm == False
+        for m in range(8):
+            F[m][tl] = Fl[m][tl]
+            F[m][tr] = Fr[m][tr]
+        if np.any(tm==True):
+            # set switch variable of hll
+            switch_to_hll = np.zeros(Vl[0].shape)
+            # initial guess of total pressure
+            ptc0 = self.initial_guess(ptl, ptr, bnc, sl, sr, Ul, Ur, Fl, Fr)
+            # find total pressure -----
+            ptc = ptc0
+            f0, sal, sar, btc, buc, sm, failed = self.find_pressure(sl, sr, Ul, Ur, Fl, Fr, ptl, ptr, ptc0, bnc)
+            # set true array
+            ta = (abs(f0) > eps) & (switch_to_hll == False)
+            fa = ta == False
+            ptc[ta] = 1.025 * ptc0[ta]
+            dp = np.zeros(len(bnc))
+            for i in range(self.max_iter):
+                f, sal, sar, btc, buc, sm, failed = self.find_pressure(sl, sr, Ul, Ur, Fl, Fr, ptl, ptr, ptc, bnc)
+                # if iteration is too many, switch to HLL
+                dp[ta] = (ptc[ta]-ptc0[ta]) / (f[ta]-f0[ta]) * f[ta]
+                ptc0[ta] = ptc[ta]
+                f0[ta] = f[ta]
+                ptc[ta] -= dp[ta]
+                # set negative pressure or nan array
+                ne = ptc < 0 | np.isnan(ptc)
+                ptc[ne] = eps
+                if np.any(abs(dp[ta])<1.0e-6*ptc[ta]) or np.any(abs(f[ta])<1.0e-6):
+                    break
+            # set switch
+            switch_to_hll = failed
+            ptc[fa] = ptc0[fa]
+            # set true arrays
+            tml = sal >= - self.speed_limit
+            tmr = sar <= self.speed_limit
+            tc = tml | tmr
+            tc = tc == False
+            if np.any(tml==True):
+                # get ml state
+                vnl, vtl, vul, \
+                btl, bul, \
+                wl, dl, el, \
+                mnl, mtl, mul, \
+                Uml, Rl = self.compute_middle_state(sl, Ul, Fl, ptc, bnc)
+                Fml = Fl + sl * (Uml - Ul)
+                for m in range(8):
+                    F[m][tml] = Fml[m][tml]
+            if np.any(tmr==True):
+                # get mr state
+                vnr, vtr, vur, \
+                btr, bur, \
+                wr, dr, er, \
+                mnr, mtr, mur, \
+                Umr, Rr = self.compute_middle_state(sr, Ur, Fr, ptc, bnc)
+                Fmr = Fr + sr * (Umr - Ur)                    
+                for m in range(8):
+                    F[m][tmr] = Fmr[m][tmr]
+            if np.any(tc==True):
+                # set true array 
+                tcl = sm > 0
+                tcr = tcl == False
+                if np.any(tcl==True):
+                    # get ml state
+                    vnl, vtl, vul, \
+                    btl, bul, \
+                    wl, dl, el, \
+                    mnl, mtl, mul, \
+                    Uml, Rl = self.compute_middle_state(sl, Ul, Fl, ptc, bnc)
+                    # compute sigma vector eq. (35), (42)
+                    etal = - np.sign(bnc) * np.sqrt(wl)
+                    # compute Kcl vector eq. (41)
+                    knl = (Rl[1]+ptc+Rl[5]*etal) / (sl*ptc+Rl[4]+bnc*etal)
+                    ktl = (Rl[2]+Rl[6]*etal) / (sl*ptc+Rl[4]+bnc*etal)
+                    kul = (Rl[3]+Rl[7]*etal) / (sl*ptc+Rl[4]+bnc*etal)
+                    # get mr state
+                    vnr, vtr, vur, \
+                    btr, bur, \
+                    wr, dr, er, \
+                    mnr, mtr, mur, \
+                    Umr, Rr = self.compute_middle_state(sr, Ur, Fr, ptc, bnc)
+                    # compute sigma vector eq. (35), (42)
+                    etar = np.sign(bnc) * np.sqrt(wr)
+                    # compute Kcr vector eq. (41)
+                    knr = (Rr[1]+ptc+Rr[5]*etar) / (sr*ptc+Rr[4]+bnc*etar)
+                    ktr = (Rr[2]+Rr[6]*etar) / (sr*ptc+Rr[4]+bnc*etar)
+                    kur = (Rr[3]+Rr[7]*etar) / (sr*ptc+Rr[4]+bnc*etar)
+                    # compute B-fields @ central region eq. (45)
+                    dk = knr - knl + self.eps
+                    btc = ((btr*(knr-vnr)+bnc*vtr)-(btl*(knl-vnl)+bnc*vtl)) / dk
+                    buc = ((bur*(knr-vnr)+bnc*vur)-(bul*(knl-vnl)+bnc*vul)) / dk
+                    # get cl state
+                    vn, vt, vu, \
+                    d, e, \
+                    mn, mt, mu, \
+                    Uc = self.compute_central_state(dl, vnl, vtl, vul, \
+                                                        mnl, ptc, el, \
+                                                        bnc, btl, bul, btc, buc, \
+                                                        knl, ktl, kul, etal)
+                    # convert state to flux
+                    Fcl = Fl + sl * (Uml-Ul) + sal * (Uc-Uml)
+                    for m in range(8):
+                        F[m][tcl] = Fcl[m][tcl]
+                if np.any(tcr==True):
+                    # get ml state
+                    vnl, vtl, vul, \
+                    btl, bul, \
+                    wl, dl, el, \
+                    mnl, mtl, mul, \
+                    Uml, Rl = self.compute_middle_state(sl, Ul, Fl, ptc, bnc)
+                    # compute sigma vector eq. (35), (41)
+                    etal = - np.sign(bnc) * np.sqrt(wl)
+                    # compute Kcl vector eq. (41)
+                    knl = (Rl[1]+ptc+Rl[5]*etal) / (sl*ptc+Rl[4]+bnc*etal)
+                    ktl = (Rl[2]+Rl[6]*etal) / (sl*ptc+Rl[4]+bnc*etal)
+                    kul = (Rl[3]+Rl[7]*etal) / (sl*ptc+Rl[4]+bnc*etal)
+                    # get mr state
+                    vnr, vtr, vur, \
+                    btr, bur, \
+                    wr, dr, er, \
+                    mnr, mtr, mur, \
+                    Umr, Rr = self.compute_middle_state(sr, Ur, Fr, ptc, bnc)
+                    # compute sigma vector eq. (35), (42)
+                    etar = np.sign(bnc) * np.sqrt(wr)
+                    # compute Kcr vector eq. (41)
+                    knr = (Rr[1]+ptc+Rr[5]*etar) / (sr*ptc+Rr[4]+bnc*etar)
+                    ktr = (Rr[2]+Rr[6]*etar) / (sr*ptc+Rr[4]+bnc*etar)
+                    kur = (Rr[3]+Rr[7]*etar) / (sr*ptc+Rr[4]+bnc*etar)
+                    # compute B-fields @ central region eq. (45)
+                    dk = knr - knl + self.eps
+                    btc = ((btr*(knr-vnr)+bnc*vtr)-(btl*(knl-vnl)+bnc*vtl)) / dk
+                    buc = ((bur*(knr-vnr)+bnc*vur)-(bul*(knl-vnl)+bnc*vul)) / dk
+                    # get cr state
+                    vn, vt, vu, \
+                    d, e, \
+                    mn, mt, mu, \
+                    Uc = self.compute_central_state(dr, vnr, vtr, vur, \
+                                                        mnr, ptc, er, \
+                                                        bnc, btr, bur, btc, buc, \
+                                                        knr, ktr, kur, etar)
+                    # convert state to flux
+                    Fcr = Fr + sr * (Umr-Ur) + sar * (Uc-Umr)
+                    for m in range(8):
+                        F[m][tcr] = Fcr[m][tcr]
+        # if switch_to_hll == True, set HLL flux
+        for m in range(8):
+            F[m][switch_to_hll] = (sr[switch_to_hll]*Fl[m][switch_to_hll]
+                                    -sl[switch_to_hll]*Fr[m][switch_to_hll]
+                                    +sr[switch_to_hll]*sl[switch_to_hll]
+                                    *(Ur[m][switch_to_hll]-Ul[m][switch_to_hll])) \
+                                    / (sr[switch_to_hll]-sl[switch_to_hll])
         return F
